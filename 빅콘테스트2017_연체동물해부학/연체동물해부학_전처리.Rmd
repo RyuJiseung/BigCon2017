@@ -1,0 +1,902 @@
+---
+title: "Making train & test set"
+output: html_document
+---
+
+# 1. 필요한 패키지 & 데이터 로드
+```{r,results='hide',message=FALSE}
+par(family="AppleGothic")
+library("needs")
+needs(ggplot2, gridExtra,tibble, dplyr, stringr, corrgram, corrplot, DMwR ,h2o, caret, rpart, Amelia, rlist, GGally, purrr, tidyr, randomForest, ROCR, pROC, gmodels, plotly)
+
+df<-read.csv("~/Desktop/공모전/Challenge_data/trans_Data_set.csv",stringsAsFactors = F)
+```
+
+
+# 2. 데이터 전처리
+```{r, message=FALSE,warning=FALSE}
+not<-c(17,23,54,57,60,67,68)
+df[,not]<-lapply(df[,not],as.factor)
+
+# 금액맞추기
+df[,c(7,8,9,10,16)]<-df[,c(7,8,9,10,16)]*0.1
+df[,c(27,28,37,38,40:46,50,58,59,61,64,66,69)]<-df[,c(27,28,37,38,40:46,50,58,59,61,64,66,69)]*0.0001
+
+#SCI 데이터 대출금액
+df$TOT_LNIF_AMT<-ifelse(df$TOT_LNIF_AMT==0,0,df$TOT_LNIF_AMT+149.9)
+df$TOT_CLIF_AMT<-ifelse(df$TOT_CLIF_AMT==0,0,df$TOT_CLIF_AMT+149.9)
+df$BNK_LNIF_AMT<-ifelse(df$BNK_LNIF_AMT==0,0,df$BNK_LNIF_AMT+149.9)
+df$CPT_LNIF_AMT<-ifelse(df$CPT_LNIF_AMT==0,0,df$CPT_LNIF_AMT+149.9)
+
+#SCI 유지기간
+df$CRDT_OCCR_MDIF<- df %>% with(ifelse(CRDT_OCCR_MDIF==0,0,round(CRDT_OCCR_MDIF/12)+1))
+df$SPTCT_OCCR_MDIF<- df %>% with(ifelse(SPTCT_OCCR_MDIF==0,0,round(SPTCT_OCCR_MDIF/12)+1))
+df$CTCD_OCCR_MDIF<- df %>% with(ifelse(CTCD_OCCR_MDIF==0,0,round(CTCD_OCCR_MDIF/12)+1))
+
+#HAN LT1Y_PEOD_RATE
+df$LT1Y_PEOD_RATE<- df %>% with(ifelse(LT1Y_PEOD_RATE == "90이상",95,
+ifelse(LT1Y_PEOD_RATE == "90미만",75,
+ifelse(LT1Y_PEOD_RATE == "60미만",55,
+ifelse(LT1Y_PEOD_RATE == "50미만",45,
+ifelse(LT1Y_PEOD_RATE == "40미만",35,
+ifelse(LT1Y_PEOD_RATE == "30미만",25,
+ifelse(LT1Y_PEOD_RATE == "20미만",15,
+ifelse(LT1Y_PEOD_RATE == "10미만",5,0)))))))))
+
+#HAN AGE, LAST_CHLD_AGE
+df$LAST_CHLD_AGE <- as.numeric(df$LAST_CHLD_AGE) # (NULL이 na로 바뀜)
+df$AGE<-as.numeric(df$AGE) # (*이 na로 바뀜)
+```
+
+# 3. NA, * 처리
+```{r}
+# LAST_CHLD_AGE : 형변환으로 인해 NULL에서 NA로 변환된 값을 0으로 대체
+df$LAST_CHLD_AGE <- ifelse(is.na(df$LAST_CHLD_AGE),0,df$LAST_CHLD_AGE) # 오류발견 10.2 18:21 (*이 na로 바뀜)
+
+# AGE : 형변환으로 인해 *에서 NA로 변환된 값을 포함한 행제거(SEX *은 AGE *과 100% 일치)
+before <- nrow(df)
+df <- na.omit(df)
+
+# 직업의 *은 하나의 level로 인정
+
+after <- nrow(df)
+# 총 제거된 행 : 430 or 1189
+#
+before - after
+```
+
+
+# 4. 변수개발
+```{r}
+# 70:TEL_CUS_MDIF는 통신사를 SKT로 유지한 기간(월)
+df$TEL_CUS_MDIF<-df %>% with(ifelse(TEL_CNTT_QTR==0,0,(2017-as.numeric(str_sub(TEL_CNTT_QTR,1,4))-1)*12+(4-(as.numeric(str_sub(TEL_CNTT_QTR,5,5))))*3))
+
+# 71:MIN_CNTT_MIDF는 최초 대출한 날짜부터 오늘날까지의 기간(월)
+df$MIN_CNTT_MIDF<-df %>% with(ifelse(MIN_CNTT_DATE==0,0,(2017-as.numeric(str_sub(MIN_CNTT_DATE,1,4))-1)*12+(12-(as.numeric(str_sub(MIN_CNTT_DATE,5,6))))))
+
+# 72:최초신용등급 범주화 & H, M, L, 0
+df$ST_CRDT_GRAD <- ifelse(df$STRT_CRDT_GRAD %in% 1:3, "H",
+ifelse(df$STRT_CRDT_GRAD %in% 4:6, "M",
+ifelse(df$STRT_CRDT_GRAD %in% 7:10, "L","0")))
+# 73:LT_CRDT_GRAD   최근신용등급 범주화 & H, M, L, 0
+df$LT_CRDT_GRAD <- ifelse(df$LTST_CRDT_GRAD %in% 1:3, "H",
+ifelse(df$LTST_CRDT_GRAD %in% 4:6, "M",
+ifelse(df$LTST_CRDT_GRAD %in% 7:10, "L","0")))
+# 74:최초신용등급, 최근신용듭급
+df$ST_LT_CRDT_GRAD <- gsub(" ", "_", paste(df$ST_CRDT_GRAD, df$LT_CRDT_GRAD))
+
+# Factor 변환
+df[,c('ST_CRDT_GRAD','LT_CRDT_GRAD','ST_LT_CRDT_GRAD')]<-lapply(df[,c('ST_CRDT_GRAD','LT_CRDT_GRAD','ST_LT_CRDT_GRAD')],as.factor)
+
+# 75:산출일 기준 담보대출 (대출 총금액 - 신용대출금액)
+df$BNK_GUIF_AMT<- df %>% with(TOT_LNIF_AMT-TOT_CLIF_AMT)
+
+# 76:산출일 기준 1회 은행대출 평균
+df$BNK_LNIF_AMT_AVG<- df %>% with(BNK_LNIF_AMT / BNK_LNIF_CNT)
+df$BNK_LNIF_AMT_AVG <- df %>% with( ifelse(is.na(df$BNK_LNIF_AMT_AVG),0,df$BNK_LNIF_AMT_AVG))
+
+# 77:산출일 기준 1회 [카드사/할부사/캐피탈] 대출 평균
+df$CPT_LNIF_AMT_AVG <- df %>% with(CPT_LNIF_AMT / CPT_LNIF_CNT)
+df$CPT_LNIF_AMT_AVG <- df %>% with(ifelse(is.na(CPT_LNIF_AMT_AVG),0,CPT_LNIF_AMT_AVG) )
+
+# 78:산출일 기준 [카드사/할부사/캐피탈]을 제외한 제2금융권 대출 건수
+df$SPART_ECP_CPT_CNT <- df %>% with(SPART_LNIF_CNT - CPT_LNIF_CNT)
+
+# 79:개인소득대비 부채비율
+df$INCM_LNIF_RATE_IND <- df %>% with(TOT_LNIF_AMT/(CUST_JOB_INCM+1))
+
+# 80:개인 + 배우자 소득대비 부채비율
+df$INCM_LNIF_RATE_COU<-df %>% with(TOT_LNIF_AMT/(CUST_JOB_INCM+MATE_JOB_INCM+1))
+
+# 81:가구추정소득 대비 부채비율
+df$INCM_LNIF_RATE_FAM<-df %>% with(TOT_LNIF_AMT/(HSHD_INFR_INCM+1))
+
+# 82:한화생명에서 실행된 신용등급의 변화
+df$CHG_CRDT_GRAD <- df %>% with(as.numeric(LTST_CRDT_GRAD) - as.numeric(STRT_CRDT_GRAD))
+
+# 83:카드사 + 기타 - 2산업분류 ( 사채??? 아니면 에러??? )
+df$CPT_ECT_M_SPART_CNT <- df %>% with(CPT_LNIF_CNT + ECT_LNIF_CNT - SPART_LNIF_CNT)
+
+# 84:총 대출 건수 (은행 + 카드사 + 기타)
+df$TOT_LNIF_CNT<-df %>% with(BNK_LNIF_CNT + CPT_LNIF_CNT + ECT_LNIF_CNT)
+
+# 85:전체 대출 건수 중 은행 건수 비율
+df$BNK_LNIF_CNT_PREM <-df %>% with(ifelse(TOT_LNIF_CNT == 0,0, BNK_LNIF_CNT/TOT_LNIF_CNT))
+
+# 86:전체 대출 건수 중 2산업분류 건수 비율
+df$SPART_LNIF_CNT_PREM<-df %>% with(ifelse(SPART_LNIF_CNT == 0,0, SPART_LNIF_CNT/TOT_LNIF_CNT))
+
+# 87:은행 외의 대출 중 카드사 대출비율
+df$CPT_TOT_CNT_PREM <- df %>% with(ifelse((CPT_LNIF_CNT + SPART_LNIF_CNT) == 0,0,CPT_LNIF_CNT/(CPT_LNIF_CNT+ECT_LNIF_CNT))) # 피쳐명 수정 10.08 02:37
+
+# 88:은행 외의 대출 중 기타 대출비율
+df$ECT_TOT_CNT_PREM <-df %>% with(ifelse((CPT_LNIF_CNT + SPART_LNIF_CNT) == 0,0,ECT_LNIF_CNT/(CPT_LNIF_CNT+ECT_LNIF_CNT)))  # 피쳐명 수정 10.08 02:37
+
+# 대출건수
+#89: TOT_MTIF_AMT : 전체 총 대출 - 신용 대출 금액
+df$TOT_MTIF_AMT <- df %>% with(TOT_LNIF_AMT - TOT_CLIF_AMT)
+
+# 90: CPT_LNIF_CNT_PREM : 전체 대출 건 중 카드사/할부사/캐피탈이 차지하는 비율
+df$CPT_LNIF_CNT_PREM <- df %>% with(CPT_LNIF_CNT/TOT_LNIF_CNT)
+df$CPT_LNIF_CNT_PREM<- df %>% with(ifelse(is.na(CPT_LNIF_CNT_PREM),0,CPT_LNIF_CNT_PREM))
+
+# 91: ECT_LNIF_CNT_PREM : 전체 대출 건 중 기타대출이 차지하는 비율
+df$ECT_LNIF_CNT_PREM <- df %>% with(ECT_LNIF_CNT/TOT_LNIF_CNT)
+df$ECT_LNIF_CNT_PREM<-df %>% with(ifelse(is.na(ECT_LNIF_CNT_PREM),0,ECT_LNIF_CNT_PREM))
+
+# 대출금액
+# 92: TOT_CLIF_AMT_PREM : 총 대출 금액 중 신용대출이 차지하는 비율
+df$TOT_CLIF_AMT_PREM <- df %>% with(TOT_CLIF_AMT/TOT_LNIF_AMT)
+
+# 93: TOT_MTIF_AMT_PREM : 전체 대출 금액 중 신용대출 외 금액
+df$TOT_MTIF_AMT_PREM <- df %>% with(TOT_MTIF_AMT/TOT_LNIF_AMT)
+
+# 94: BNK_LNIF_AMT_PREM : 총 대출 금액 중 은행대출이 차지하는 비율
+df$BNK_LNIF_AMT_PREM <- df %>% with(BNK_LNIF_AMT/TOT_LNIF_AMT)
+
+# 95: CPT_LNIF_AMT_PREM : 총 대출 금액 중 카드사/할부사/캐피탈 대출이 차지하는 비율
+df$CPT_LNIF_AMT_PREM <- df %>% with(CPT_LNIF_AMT/TOT_LNIF_AMT)
+
+# 96: ECT_LNIF_AMT : 은행, 카드사 이외 대출 금액
+df$ECT_LNIF_AMT <- df %>% with(TOT_LNIF_AMT-(BNK_LNIF_AMT+CPT_LNIF_AMT))
+df$ECT_LNIF_AMT<- df %>% with(ifelse(ECT_LNIF_AMT < 0, 0, ECT_LNIF_AMT))
+
+# 97: ECT_TOT_AMT_PREM : 전체 대출 금액 중 기타 대출
+df$ECT_TOT_AMT_PREM <- df %>% with(ECT_LNIF_AMT/TOT_LNIF_AMT)
+
+# 98: HSHB_GUIF_AMT_PREM : 보증 금액 / 가구 총 수입
+df$HSHB_GUIF_AMT_PREM<- df %>% with(ifelse(CB_GUIF_AMT==0, 0, CB_GUIF_AMT/(HSHD_INFR_INCM+1)))
+
+# 99: CUST_GUIF_AMT_PREM : 보증 금액 / 개인 총 수입
+df$CUST_GUIF_AMT_PREM<- df %>% with(ifelse(CB_GUIF_AMT==0, 0, CB_GUIF_AMT/(CUST_JOB_INCM+1)))
+
+# 100, 101 : JOB_RATE, JOB_RATE2 : 본인과 직업 패턴 기준 연체자 비율
+job1 <- df %>%
+group_by(OCCP_NAME_G, MATE_OCCP_NAME_G,TARGET) %>%
+summarise(cnt1 = n())
+job2 <- df %>%
+group_by(OCCP_NAME_G,MATE_OCCP_NAME_G) %>%
+summarise(cnt2 = n())
+job3 <- left_join(job1,job2, by=c("OCCP_NAME_G"="OCCP_NAME_G","MATE_OCCP_NAME_G"="MATE_OCCP_NAME_G"))
+job4 <- job3 %>%
+filter(TARGET == 0) %>%
+mutate(Y = cnt2 - cnt1)
+job <- job4[,c(1,2,5,6)]
+job$JOB_RATE <- job$Y/job$cnt2
+job$JOB_RATE2 <- ifelse(job$cnt2 >=30 & (job$JOB_RATE >= 0.04277035 + 0.005 | job$JOB_RATE <= 0.04277035 - 0.005), job$JOB_RATE, 0.04277035)
+job <- job[,c(1,2,5,6)]
+job$OCCP_NAME_G <- as.factor(job$OCCP_NAME_G)
+job$MATE_OCCP_NAME_G <- as.factor(job$MATE_OCCP_NAME_G)
+rm(job1,job2,job3,job4)
+
+df <- left_join(df,job,by=c("OCCP_NAME_G"="OCCP_NAME_G","MATE_OCCP_NAME_G"="MATE_OCCP_NAME_G"))
+df$JOB_RATE <- ifelse(is.na(df$JOB_RATE) == T, 0.04277035, df$JOB_RATE)
+df$JOB_RATE2 <- ifelse(is.na(df$JOB_RATE2) == T, 0.04277035, df$JOB_RATE2)
+
+# 102 : OCCP_NAME_G2 : 본인직업 연체자 비율점수화
+df$OCCP_NAME_G2 <- as.factor(df$OCCP_NAME_G)
+df$OCCP_NAME_G2 <- as.numeric(df$OCCP_NAME_G2)
+df$OCCP_NAME_G2<-df %>% with(ifelse(OCCP_NAME_G2==1,2,
+ifelse(OCCP_NAME_G2==2,2,
+ifelse(OCCP_NAME_G2==3,-7,
+ifelse(OCCP_NAME_G2==4,-2,
+ifelse(OCCP_NAME_G2==5,-2,
+ifelse(OCCP_NAME_G2==6,1,
+ifelse(OCCP_NAME_G2==7,9,
+ifelse(OCCP_NAME_G2==8,2,
+ifelse(OCCP_NAME_G2==9,1,
+ifelse(OCCP_NAME_G2==10,1,
+ifelse(OCCP_NAME_G2==11,-4,
+ifelse(OCCP_NAME_G2==12,3,
+ifelse(OCCP_NAME_G2==13,0,
+ifelse(OCCP_NAME_G2==14,0,
+ifelse(OCCP_NAME_G2==15,-5,
+ifelse(OCCP_NAME_G2==16,-1,
+ifelse(OCCP_NAME_G2==17,11,
+ifelse(OCCP_NAME_G2==18,-11,0)))))))))))))))))))
+
+# 103 MATE_OCCP_NAME_G2 : 배우자직업 연체자 비율점수화
+df$MATE_OCCP_NAME_G2 <- as.factor(df$MATE_OCCP_NAME_G)
+df$MATE_OCCP_NAME_G2 <- as.numeric(df$MATE_OCCP_NAME_G2)
+df$MATE_OCCP_NAME_G2 <-df %>% with(ifelse(MATE_OCCP_NAME_G2==1,2,
+ifelse(MATE_OCCP_NAME_G2==2,4,
+ifelse(MATE_OCCP_NAME_G2==3,3,
+ifelse(MATE_OCCP_NAME_G2==4,-1,
+ifelse(MATE_OCCP_NAME_G2==5,-48,
+ifelse(MATE_OCCP_NAME_G2==6,0,
+ifelse(MATE_OCCP_NAME_G2==7,3,
+ifelse(MATE_OCCP_NAME_G2==8,0,
+ifelse(MATE_OCCP_NAME_G2==9,3,
+ifelse(MATE_OCCP_NAME_G2==10,1,
+ifelse(MATE_OCCP_NAME_G2==11,2,
+ifelse(MATE_OCCP_NAME_G2==12,9,
+ifelse(MATE_OCCP_NAME_G2==13,0,
+ifelse(MATE_OCCP_NAME_G2==14,2,
+ifelse(MATE_OCCP_NAME_G2==15,4,
+ifelse(MATE_OCCP_NAME_G2==16,2,
+ifelse(MATE_OCCP_NAME_G2==17,15,
+ifelse(MATE_OCCP_NAME_G2==18,0,0)))))))))))))))))))
+
+# 104: 가구 추정 소득 : ( 본인, 배우자 추정소득 합 )
+df$OTHR_INCM <-df %>% with(HSHD_INFR_INCM - (CUST_JOB_INCM + MATE_JOB_INCM))
+
+# 105: CUST_ACTL_INS_PREM : 가족 인원 수 중 보험가입 인원 수의 비중
+df$CUST_ACTL_INS_PREM <- df %>% with(CUST_FMLY_NUM/ACTL_FMLY_NUM)
+
+# 106: ONEDAY_PAY : 일시납일수도 있고
+df$ONEDAY_PAY <-df %>% with(ifelse(GDINS_MON_PREM == 0 & SVINS_MON_PREM == 0 & TOT_PREM != 0,1,0) )
+
+# 107: PREM_OVDU_AMT : 보험료 연체 금액
+df$PREM_OVDU_AMT <-df %>% with( PREM_OVDU_RATE/100 * TOT_PREM )
+
+# 108: MON_TLFE_AMT_PREM : 월단위 납부요금 / 월급
+df$MON_TLFE_AMT_PREM <- df %>% with((TEL_CUS_MDIF/((HSHD_INFR_INCM/12)+1)))
+
+##109: DIFF_OVDU_RATE : 보험료연체율과 최근1년보험료연체율 차이
+df$DIFF_OVDU_RATE <- df %>% with(PREM_OVDU_RATE - LT1Y_PEOD_RATE)
+
+##110: LT1Y_CTLT_CNT_per : 최근1년 실효해지건수 별 TARGET 비율
+LT1Y_CTLT_CNT_per<- df %>% group_by(LT1Y_CTLT_CNT) %>% summarise(LT1Y_CTLT_CNT_per=mean(TARGET))
+df<-left_join(df,LT1Y_CTLT_CNT_per)
+
+# 111: AUTR_FAIL_MCNT_FREQ :자동이체 빈도 범주화
+df$AUTR_FAIL_MCNT_FREQ <- ifelse(df$AUTR_FAIL_MCNT == 0, 0,
+ifelse(df$AUTR_FAIL_MCNT %in% 1:20, 1,
+ifelse(df$AUTR_FAIL_MCNT %in% 21:40, 2,3)));
+# 112: PER_TOT_PREM : 기납입보험료 (개인/가구)
+df$PER_TOT_PREM <- df %>% with( TOT_PREM/FMLY_TOT_PREM)
+df$PER_TOT_PREM <- df %>% with(ifelse(is.na(PER_TOT_PREM),0,PER_TOT_PREM))
+
+# 113: PER_GDINS_PREM : 비연금저축상품월납입보험료 (개인/가구)
+df$PER_GDINS_PREM <- with(df, GDINS_MON_PREM/FMLY_GDINS_MNPREM)
+df$PER_GDINS_PREM <- df %>% with(ifelse(is.na(PER_GDINS_PREM),0,PER_GDINS_PREM))
+
+# 114: PER_GDINS_PREM_Y : 비연금저축상품월납입보험료 (개인/가구) 0.2이상이면 1
+df$PER_GDINS_PREM_Y<-df%>%with(ifelse(PER_GDINS_PREM>0.2,1,0))
+
+# 115 : PER_SVINS_PREM : 연금저축상품월납입보험료 (개인/가구)
+df$PER_SVINS_PREM <- with(df, SVINS_MON_PREM/FMLY_SVINS_MNPREM)
+df$PER_SVINS_PREM <- df %>% with(ifelse(is.na(PER_SVINS_PREM),0,PER_SVINS_PREM))
+
+# 116 : PER_SVINS_PREM_Y 연금저축상품월납입보험료 (개인/가구) 0.5이상이면 1
+df$PER_SVINS_PREM_Y <- df%>%with(ifelse(PER_GDINS_PREM>0.5,1,0))
+
+# 117: AVG_OCCR 신용대출, 카드개설, 신용카드 유지기간 평균
+df$AVG_OCCR <- df %>% with((CRDT_OCCR_MDIF + CRDT_CARD_CNT +SPTCT_OCCR_MDIF + CTCD_OCCR_MDIF)/4)
+
+
+
+# 118~123 : AGE관련 카이값 및 타겟비율 점수화
+# 118
+df$AGE_SCORE_CHI <- df %>% with(ifelse(AGE == "20" ,0.289,
+ifelse(AGE == "25",16.781,
+ifelse(AGE == "30",12.669,
+ifelse(AGE == "35",38.194,
+ifelse(AGE == "40",1.424,
+ifelse(AGE == "45",0.505,
+ifelse(AGE == "50",-2.136,
+ifelse(AGE == "55",-10.240,
+ifelse(AGE == "60",-27.206,
+ifelse(AGE == "65",-22.262,-0.091)))))))))))
+# 119
+df$AGE_SCORE_PROP <- df %>% with(ifelse(AGE == "20" ,0.05000000,
+ifelse(AGE == "25",0.06088142,
+ifelse(AGE == "30",0.05296128,
+ifelse(AGE == "35",0.05448638,
+ifelse(AGE == "40",0.04484366,
+ifelse(AGE == "45",0.04387991,
+ifelse(AGE == "50",0.04054359,
+ifelse(AGE == "55",0.03746492,
+ifelse(AGE == "60",0.03155604,
+ifelse(AGE == "65",0.02650670,0.03970223)))))))))))
+
+# 120
+df$AGE_G1_SCORE_CHI <- df %>% with(ifelse(AGE >= 20 & AGE <=35 ,1,
+ifelse(AGE >= 36 & AGE <=60 ,2,3)))
+df$AGE_G1_SCORE_CHI <- df %>% with(ifelse(AGE_G1_SCORE_CHI == 1 , 65.460,
+ifelse(AGE_G1_SCORE_CHI == 2, -9.436, -20.880)))
+
+# 121
+df$AGE_G1_SCORE_PROP <- df %>% with(ifelse(AGE >= 20 & AGE <=35 ,1,
+ifelse(AGE >= 36 & AGE <=60 ,2,3)))
+df$AGE_G1_SCORE_PROP <- df %>% with(ifelse(AGE_G1_SCORE_PROP == 1 ,0.05473823,
+ifelse(AGE_G1_SCORE_PROP == 2, 0.04051035, 0.02784048)))
+
+# 122
+df$AGE_G2_SCORE_CHI <- df %>% with(ifelse(AGE >= 20 & AGE <=25 ,1,
+ifelse(AGE >= 26 & AGE <=35 ,2,
+ifelse(AGE >= 36 & AGE <=60 ,3,4))))
+df$AGE_G2_SCORE_CHI <- df %>% with(ifelse(AGE_G2_SCORE_CHI == 1 , 16.472,
+ifelse(AGE_G2_SCORE_CHI == 2, 50.663,
+ifelse(AGE_G2_SCORE_CHI == 3, -9.436,-20.880))))
+
+# 123
+df$AGE_G2_SCORE_PROP <- df %>% with(ifelse(AGE >= 20 & AGE <=25 ,1,
+ifelse(AGE >= 26 & AGE <=35 ,2,
+ifelse(AGE >= 36 & AGE <=60 ,3,4))))
+df$AGE_G2_SCORE_PROP <- df %>% with(ifelse(AGE_G2_SCORE_PROP == 1 ,0.05981155,
+ifelse(AGE_G2_SCORE_PROP == 2, 0.05402119,
+ifelse(AGE_G2_SCORE_PROP == 3, 0.04051035,0.02784048))))
+
+# 124: 신용대출, 카드개설, 신용카드 유지기간 평균
+df$AVG_OCCR2 <- df %>% with((CRDT_OCCR_MDIF + SPTCT_OCCR_MDIF + CTCD_OCCR_MDIF)/3)
+
+# 125: 소득분위
+df$INCM_GRUP <- df %>% with(ifelse(HSHD_INFR_INCM<=(134*12),1,
+ifelse(HSHD_INFR_INCM<=(312*12),2,
+ifelse(HSHD_INFR_INCM<=(402*12),3,
+ifelse(HSHD_INFR_INCM<=(491*12),4,
+ifelse(HSHD_INFR_INCM<=(580*12),5,
+ifelse(HSHD_INFR_INCM<=(692*12),6,
+ifelse(HSHD_INFR_INCM<=(804*12),7,
+ifelse(HSHD_INFR_INCM<=(982*12),8,
+ifelse(HSHD_INFR_INCM<=(1295*12),9,10))))))))))
+
+# 126: 납부요금 미준수 여부
+df$MXOD_YN <- df %>% with(ifelse(LT1Y_MXOD_AMT > 0,1,0))
+df$MXOD_YN <- df$MXOD_YN + df$TLFE_UNPD_CNT
+
+# 127: 보험 최신성
+df$INS_REC <- df %>% with(ifelse(TOT_PREM <= 400,1,0))
+df$INS_REC <- as.factor(df$INS_REC)
+
+# 128 : PAYM_METD_NUM 납부방법
+df$PAYM_METD_NUM <- df %>% with(ifelse(PAYM_METD=="G",1,
+ifelse(PAYM_METD=="R",2,
+ifelse(PAYM_METD=="O",3,
+ifelse(PAYM_METD=="K",4,0)))))
+
+# 129~133(129~132을 반영한 것이 133, 5개 다 쓸껀지 133 하나만 쓸껀지)
+# 129 : BNK_CNT_SCORE : BNK건수별 연체비율 점수
+cnt1 <- df %>% group_by(BNK_LNIF_CNT) %>% summarise(BNK_CNT_SCORE = mean(TARGET))
+df <- left_join(df, cnt1)
+
+# 130 : CPT_CNT_SCORE : CPT건수별 연체비율 점수
+cnt2 <- df %>% group_by(CPT_LNIF_CNT) %>% summarise(CPT_CNT_SCORE = mean(TARGET))
+df <- left_join(df, cnt2)
+
+# 131 : SPART_CNT_SCORE :  SPART건수별 연체비율 점수
+cnt3 <- df %>% group_by(SPART_LNIF_CNT) %>% summarise(SPART_CNT_SCORE= mean(TARGET))
+df <- left_join(df, cnt3)
+
+# 132 : ECT_CNT_SCORE : ECT건수별 연체비율 점수
+cnt4 <- df %>% group_by(ECT_LNIF_CNT) %>% summarise(ECT_CNT_SCORE = mean(TARGET))
+df <- left_join(df, cnt4)
+
+# 133 : CNT_SCORE_AVG : 총 건수별 연체비율 합의 평균
+df$CNT_SCORE_AVG <- with(df,(BNK_CNT_SCORE+CPT_CNT_SCORE+SPART_CNT_SCORE+ECT_CNT_SCORE)/4)
+
+# 134~135 134을 Y의 비율로 점수화 한 것이 135
+# 134 : OVDU_CNT : 연체관련변수 Y/N변환한 값들의의 합
+temp <- df %>% select(CRLN_OVDU_RATE, CRLN_30OVDU_RATE, PREM_OVDU_RATE, LT1Y_PEOD_RATE, LT1Y_SLOD_RATE, CRMM_OVDU_AMT, LT1Y_MXOD_AMT, TARGET)
+temp$CRLN_OVDU_RATE2 <- ifelse(temp$CRLN_OVDU_RATE > 0,1,0)
+temp$CRLN_30OVDU_RATE2 <- ifelse(temp$CRLN_30OVDU_RATE > 0,1,0)
+temp$PREM_OVDU_RATE2 <- ifelse(temp$PREM_OVDU_RATE > 0,1,0)
+temp$LT1Y_PEOD_RATE2 <- ifelse(temp$LT1Y_PEOD_RATE > 0,1,0)
+temp$LT1Y_SLOD_RATE2 <- ifelse(temp$LT1Y_SLOD_RATE > 0,1,0)
+temp$CRMM_OVDU_AMT2 <- ifelse(temp$CRMM_OVDU_AMT > 0,1,0)
+temp$LT1Y_MXOD_AMT2 <- ifelse(temp$LT1Y_MXOD_AMT > 0,1,0)
+df$OVDU_CNT <- with(temp, CRLN_OVDU_RATE2+CRLN_30OVDU_RATE2+PREM_OVDU_RATE2+LT1Y_PEOD_RATE2+LT1Y_SLOD_RATE2+CRMM_OVDU_AMT2+LT1Y_MXOD_AMT2)
+rm(temp)
+
+# 135 : OVDU_CNT_SCORE
+OVDU_CNT_DF <- df %>% group_by(OVDU_CNT) %>% summarise(OVDU_CNT_SCORE=mean(TARGET))
+df <- left_join(df,OVDU_CNT_DF)
+
+# 136 : CRLN_OVDU_Y_PROP 한화생명신용대출 미상환금액 유무 TARGET 비율
+df$CRLN_OVDU_Y_PROP <- df %>% with(ifelse(TOT_CRLN_AMT - TOT_REPY_AMT > 0, 1, 0))
+df$CRLN_OVDU_Y_PROP <- df %>% with(ifelse(CRLN_OVDU_Y_PROP == 1, 0.05565749, 0.04237929))
+
+# 137 : LT1Y_MXOD_Y_PROP 최근 1년 납부요금 연체 유무 TARGET 비율
+df$LT1Y_MXOD_Y_PROP <- df %>% with(ifelse(LT1Y_MXOD_AMT > 0, 1, 0))
+df$LT1Y_MXOD_Y_PROP <- df %>% with(ifelse(LT1Y_MXOD_Y_PROP == 1, 0.15496521, 0.02416622))
+
+# 138 : SKT 멤버수
+df$TEL_MBSP_GRAD_NUM<-  df %>% with(ifelse(TEL_MBSP_GRAD=="E",4,
+ifelse(df$TEL_MBSP_GRAD=="R",3,
+ifelse(df$TEL_MBSP_GRAD=="W",2,
+ifelse(df$TEL_MBSP_GRAD=="Q",1,0)))))
+```
+ 
+
+# 5. log변수 생성
+```{r}
+df[,colnames(df %>% keep(is.character))]<-
+lapply(df[,colnames(df %>% keep(is.character))],as.factor)
+
+log_df <- df %>% keep(is.numeric)
+
+log_df$ARPU <- log_df$ARPU+0.0001
+log_df$CHG_CRDT_GRAD <- log_df$CHG_CRDT_GRAD+4
+log_df$CPT_ECT_M_SPART_CNT <- log_df$CPT_ECT_M_SPART_CNT+2
+log_df$OCCP_NAME_G2 <- log_df$OCCP_NAME_G2+11
+log_df$MATE_OCCP_NAME_G2 <- log_df$MATE_OCCP_NAME_G2+48
+log_df$OTHR_INCM <- log_df$OTHR_INCM+900
+log_df$DIFF_OVDU_RATE <- log_df$DIFF_OVDU_RATE+94
+log_df$AGE_SCORE_CHI <- log_df$AGE_SCORE_CHI+27.22
+log_df$AGE_G1_SCORE_CHI <- log_df$AGE_G1_SCORE_CHI+19.982
+log_df$AGE_G2_SCORE_CHI <- log_df$AGE_G2_SCORE_CHI+20.779
+
+log_df <- log(log_df[,1:ncol(log_df)]+1)
+
+sum(is.na(log_df))
+
+log_df <- log_df %>% select(-CUST_ID, -TARGET)
+sum(is.na(log_df))
+
+log_name <- names(log_df)
+log_name <- paste0(log_name,"_LOG")
+names(log_df) <- log_name
+
+df <- bind_cols(df,log_df)
+```
+ 
+# Test set!!!
+
+# 1. 필요한 패키지 & 데이터 로드
+```{r}
+te<-read.csv("~/Desktop/공모전/Challenge_data/trans_Test_set.csv",stringsAsFactors = F)
+te2<-read.csv("~/Desktop/공모전/Challenge_data/trans_Test_set.csv",stringsAsFactors = F)
+```
+
+# 2. 데이터 전처리
+```{r, message=FALSE,warning=FALSE}
+not<-c(17,23,54,57,60,67,68)
+te[,not]<-lapply(te[,not],as.factor)
+
+# 금액맞추기
+te[,c(7,8,9,10,16)]<-te[,c(7,8,9,10,16)]*0.1
+te[,c(27,28,37,38,40:46,50,58,59,61,64,66,69)]<-te[,c(27,28,37,38,40:46,50,58,59,61,64,66,69)]*0.0001
+
+#SCI 데이터 대출금액
+te$TOT_LNIF_AMT<-ifelse(te$TOT_LNIF_AMT==0,0,te$TOT_LNIF_AMT+149.9)
+te$TOT_CLIF_AMT<-ifelse(te$TOT_CLIF_AMT==0,0,te$TOT_CLIF_AMT+149.9)
+te$BNK_LNIF_AMT<-ifelse(te$BNK_LNIF_AMT==0,0,te$BNK_LNIF_AMT+149.9)
+te$CPT_LNIF_AMT<-ifelse(te$CPT_LNIF_AMT==0,0,te$CPT_LNIF_AMT+149.9)
+
+#SCI 유지기간
+te$CRDT_OCCR_MDIF<- te %>% with(ifelse(CRDT_OCCR_MDIF==0,0,round(CRDT_OCCR_MDIF/12)+1))
+te$SPTCT_OCCR_MDIF<- te %>% with(ifelse(SPTCT_OCCR_MDIF==0,0,round(SPTCT_OCCR_MDIF/12)+1))
+te$CTCD_OCCR_MDIF<- te %>% with(ifelse(CTCD_OCCR_MDIF==0,0,round(CTCD_OCCR_MDIF/12)+1))
+
+#HAN LT1Y_PEOD_RATE
+te$LT1Y_PEOD_RATE<- te %>% with(ifelse(LT1Y_PEOD_RATE == "90이상",95,
+ifelse(LT1Y_PEOD_RATE == "90미만",75,
+ifelse(LT1Y_PEOD_RATE == "60미만",55,
+ifelse(LT1Y_PEOD_RATE == "50미만",45,
+ifelse(LT1Y_PEOD_RATE == "40미만",35,
+ifelse(LT1Y_PEOD_RATE == "30미만",25,
+ifelse(LT1Y_PEOD_RATE == "20미만",15,
+ifelse(LT1Y_PEOD_RATE == "10미만",5,0)))))))))
+
+#HAN AGE, LAST_CHLD_AGE
+te$LAST_CHLD_AGE <- as.numeric(te$LAST_CHLD_AGE) # (NULL이 na로 바뀜)
+te$AGE<-as.numeric(te$AGE) # (*이 na로 바뀜)
+
+```
+
+# 3. NA, * 처리
+```{r}
+te$TARGET <- '0'
+te$TARGET <- as.factor(te$TARGET)
+# LAST_CHLD_AGE : 형변환으로 인해 NULL에서 NA로 변환된 값을 0으로 대체
+te$LAST_CHLD_AGE <- ifelse(is.na(te$LAST_CHLD_AGE),0,te$LAST_CHLD_AGE)
+
+table(te$TARGET)
+te_age_star <- te %>% filter(is.na(AGE))
+te <- te %>% filter(AGE != 0)
+table(te$TARGET)
+```
+
+# 4. 변수개발
+```{r}
+# 70:TEL_CUS_MDIF는 통신사를 SKT로 유지한 기간(월)
+te$TEL_CUS_MDIF<-te %>% with(ifelse(TEL_CNTT_QTR==0,0,(2017-as.numeric(str_sub(TEL_CNTT_QTR,1,4))-1)*12+(4-(as.numeric(str_sub(TEL_CNTT_QTR,5,5))))*3))
+
+# 71:MIN_CNTT_MIte는 최초 대출한 날짜부터 오늘날까지의 기간(월)
+te$MIN_CNTT_MIte<-te %>% with(ifelse(MIN_CNTT_DATE==0,0,(2017-as.numeric(str_sub(MIN_CNTT_DATE,1,4))-1)*12+(12-(as.numeric(str_sub(MIN_CNTT_DATE,5,6))))))
+
+# 72:최초신용등급 범주화 & H, M, L, 0
+te$ST_CRDT_GRAD <- ifelse(te$STRT_CRDT_GRAD %in% 1:3, "H",
+ifelse(te$STRT_CRDT_GRAD %in% 4:6, "M",
+ifelse(te$STRT_CRDT_GRAD %in% 7:10, "L","0")))
+# 73:LT_CRDT_GRAD   최근신용등급 범주화 & H, M, L, 0
+te$LT_CRDT_GRAD <- ifelse(te$LTST_CRDT_GRAD %in% 1:3, "H",
+ifelse(te$LTST_CRDT_GRAD %in% 4:6, "M",
+ifelse(te$LTST_CRDT_GRAD %in% 7:10, "L","0")))
+# 74:최초신용등급, 최근신용듭급
+te$ST_LT_CRDT_GRAD <- gsub(" ", "_", paste(te$ST_CRDT_GRAD, te$LT_CRDT_GRAD))
+
+# Factor 변환
+te[,c('ST_CRDT_GRAD','LT_CRDT_GRAD','ST_LT_CRDT_GRAD')]<-lapply(te[,c('ST_CRDT_GRAD','LT_CRDT_GRAD','ST_LT_CRDT_GRAD')],as.factor)
+
+# 75:산출일 기준 담보대출 (대출 총금액 - 신용대출금액)
+te$BNK_GUIF_AMT<- te %>% with(TOT_LNIF_AMT-TOT_CLIF_AMT)
+
+# 76:산출일 기준 1회 은행대출 평균
+te$BNK_LNIF_AMT_AVG<- te %>% with(BNK_LNIF_AMT / BNK_LNIF_CNT)
+te$BNK_LNIF_AMT_AVG <- te %>% with( ifelse(is.na(te$BNK_LNIF_AMT_AVG),0,te$BNK_LNIF_AMT_AVG))
+
+# 77:산출일 기준 1회 [카드사/할부사/캐피탈] 대출 평균
+te$CPT_LNIF_AMT_AVG <- te %>% with(CPT_LNIF_AMT / CPT_LNIF_CNT)
+te$CPT_LNIF_AMT_AVG <- te %>% with(ifelse(is.na(CPT_LNIF_AMT_AVG),0,CPT_LNIF_AMT_AVG) )
+
+# 78:산출일 기준 [카드사/할부사/캐피탈]을 제외한 제2금융권 대출 건수
+te$SPART_ECP_CPT_CNT <- te %>% with(SPART_LNIF_CNT - CPT_LNIF_CNT)
+
+# 79:개인소득대비 부채비율
+te$INCM_LNIF_RATE_IND <- te %>% with(TOT_LNIF_AMT/(CUST_JOB_INCM+1))
+
+# 80:개인 + 배우자 소득대비 부채비율
+te$INCM_LNIF_RATE_COU<-te %>% with(TOT_LNIF_AMT/(CUST_JOB_INCM+MATE_JOB_INCM+1))
+
+# 81:가구추정소득 대비 부채비율
+te$INCM_LNIF_RATE_FAM<-te %>% with(TOT_LNIF_AMT/(HSHD_INFR_INCM+1))
+
+# 82:한화생명에서 실행된 신용등급의 변화
+te$CHG_CRDT_GRAD <- te %>% with(as.numeric(LTST_CRDT_GRAD) - as.numeric(STRT_CRDT_GRAD))
+
+# 83:카드사 + 기타 - 2산업분류 ( 사채??? 아니면 에러??? )
+te$CPT_ECT_M_SPART_CNT <- te %>% with(CPT_LNIF_CNT + ECT_LNIF_CNT - SPART_LNIF_CNT)
+
+# 84:총 대출 건수 (은행 + 카드사 + 기타)
+te$TOT_LNIF_CNT<-te %>% with(BNK_LNIF_CNT + CPT_LNIF_CNT + ECT_LNIF_CNT)
+
+# 85:전체 대출 건수 중 은행 건수 비율
+te$BNK_LNIF_CNT_PREM <-te %>% with(ifelse(TOT_LNIF_CNT == 0,0, BNK_LNIF_CNT/TOT_LNIF_CNT))
+
+# 86:전체 대출 건수 중 2산업분류 건수 비율
+te$SPART_LNIF_CNT_PREM<-te %>% with(ifelse(SPART_LNIF_CNT == 0,0, SPART_LNIF_CNT/TOT_LNIF_CNT))
+
+# 87:은행 외의 대출 중 카드사 대출비율
+te$CPT_TOT_CNT_PREM <- te %>% with(ifelse((CPT_LNIF_CNT + SPART_LNIF_CNT) == 0,0,CPT_LNIF_CNT/(CPT_LNIF_CNT+ECT_LNIF_CNT))) # 피쳐명 수정 10.08 02:37
+
+# 88:은행 외의 대출 중 기타 대출비율
+te$ECT_TOT_CNT_PREM <-te %>% with(ifelse((CPT_LNIF_CNT + SPART_LNIF_CNT) == 0,0,ECT_LNIF_CNT/(CPT_LNIF_CNT+ECT_LNIF_CNT)))  # 피쳐명 수정 10.08 02:37
+
+# 대출건수
+#89: TOT_MTIF_AMT : 전체 총 대출 - 신용 대출 금액
+te$TOT_MTIF_AMT <- te %>% with(TOT_LNIF_AMT - TOT_CLIF_AMT)
+
+# 90: CPT_LNIF_CNT_PREM : 전체 대출 건 중 카드사/할부사/캐피탈이 차지하는 비율
+te$CPT_LNIF_CNT_PREM <- te %>% with(CPT_LNIF_CNT/TOT_LNIF_CNT)
+te$CPT_LNIF_CNT_PREM<- te %>% with(ifelse(is.na(CPT_LNIF_CNT_PREM),0,CPT_LNIF_CNT_PREM))
+
+# 91: ECT_LNIF_CNT_PREM : 전체 대출 건 중 기타대출이 차지하는 비율
+te$ECT_LNIF_CNT_PREM <- te %>% with(ECT_LNIF_CNT/TOT_LNIF_CNT)
+te$ECT_LNIF_CNT_PREM<-te %>% with(ifelse(is.na(ECT_LNIF_CNT_PREM),0,ECT_LNIF_CNT_PREM))
+
+# 대출금액
+# 92: TOT_CLIF_AMT_PREM : 총 대출 금액 중 신용대출이 차지하는 비율
+te$TOT_CLIF_AMT_PREM <- te %>% with(TOT_CLIF_AMT/TOT_LNIF_AMT)
+
+# 93: TOT_MTIF_AMT_PREM : 전체 대출 금액 중 신용대출 외 금액
+te$TOT_MTIF_AMT_PREM <- te %>% with(TOT_MTIF_AMT/TOT_LNIF_AMT)
+
+# 94: BNK_LNIF_AMT_PREM : 총 대출 금액 중 은행대출이 차지하는 비율
+te$BNK_LNIF_AMT_PREM <- te %>% with(BNK_LNIF_AMT/TOT_LNIF_AMT)
+
+# 95: CPT_LNIF_AMT_PREM : 총 대출 금액 중 카드사/할부사/캐피탈 대출이 차지하는 비율
+te$CPT_LNIF_AMT_PREM <- te %>% with(CPT_LNIF_AMT/TOT_LNIF_AMT)
+
+# 96: ECT_LNIF_AMT : 은행, 카드사 이외 대출 금액
+te$ECT_LNIF_AMT <- te %>% with(TOT_LNIF_AMT-(BNK_LNIF_AMT+CPT_LNIF_AMT))
+te$ECT_LNIF_AMT<- te %>% with(ifelse(ECT_LNIF_AMT < 0, 0, ECT_LNIF_AMT))
+
+# 97: ECT_TOT_AMT_PREM : 전체 대출 금액 중 기타 대출
+te$ECT_TOT_AMT_PREM <- te %>% with(ECT_LNIF_AMT/TOT_LNIF_AMT)
+
+# 98: HSHB_GUIF_AMT_PREM : 보증 금액 / 가구 총 수입
+te$HSHB_GUIF_AMT_PREM<- te %>% with(ifelse(CB_GUIF_AMT==0, 0, CB_GUIF_AMT/(HSHD_INFR_INCM+1)))
+
+# 99: CUST_GUIF_AMT_PREM : 보증 금액 / 개인 총 수입
+te$CUST_GUIF_AMT_PREM<- te %>% with(ifelse(CB_GUIF_AMT==0, 0, CB_GUIF_AMT/(CUST_JOB_INCM+1)))
+
+
+# 100, 101 : JOB_RATE, JOB_RATE2 : 본인과 직업 패턴 기준 연체자 비율
+te <- left_join(te,job,by=c("OCCP_NAME_G"="OCCP_NAME_G","MATE_OCCP_NAME_G"="MATE_OCCP_NAME_G"))
+te$JOB_RATE <- ifelse(is.na(te$JOB_RATE) == T, 0.04277035, te$JOB_RATE)
+te$JOB_RATE2 <- ifelse(is.na(te$JOB_RATE2) == T, 0.04277035, te$JOB_RATE2)
+
+# 102 : OCCP_NAME_G2 : 본인직업 연체자 비율점수화
+te$OCCP_NAME_G2 <- as.factor(te$OCCP_NAME_G)
+te$OCCP_NAME_G2 <- as.numeric(te$OCCP_NAME_G2)
+te$OCCP_NAME_G2<-te %>% with(ifelse(OCCP_NAME_G2==1,2,
+ifelse(OCCP_NAME_G2==2,2,
+ifelse(OCCP_NAME_G2==3,-7,
+ifelse(OCCP_NAME_G2==4,-2,
+ifelse(OCCP_NAME_G2==5,-2,
+ifelse(OCCP_NAME_G2==6,1,
+ifelse(OCCP_NAME_G2==7,9,
+ifelse(OCCP_NAME_G2==8,2,
+ifelse(OCCP_NAME_G2==9,1,
+ifelse(OCCP_NAME_G2==10,1,
+ifelse(OCCP_NAME_G2==11,-4,
+ifelse(OCCP_NAME_G2==12,3,
+ifelse(OCCP_NAME_G2==13,0,
+ifelse(OCCP_NAME_G2==14,0,
+ifelse(OCCP_NAME_G2==15,-5,
+ifelse(OCCP_NAME_G2==16,-1,
+ifelse(OCCP_NAME_G2==17,11,
+ifelse(OCCP_NAME_G2==18,-11,0)))))))))))))))))))
+
+# 103 MATE_OCCP_NAME_G2 : 배우자직업 연체자 비율점수화
+te$MATE_OCCP_NAME_G2 <- as.factor(te$MATE_OCCP_NAME_G)
+te$MATE_OCCP_NAME_G2 <- as.numeric(te$MATE_OCCP_NAME_G2)
+te$MATE_OCCP_NAME_G2 <-te %>% with(ifelse(MATE_OCCP_NAME_G2==1,2,
+ifelse(MATE_OCCP_NAME_G2==2,4,
+ifelse(MATE_OCCP_NAME_G2==3,3,
+ifelse(MATE_OCCP_NAME_G2==4,-1,
+ifelse(MATE_OCCP_NAME_G2==5,-48,
+ifelse(MATE_OCCP_NAME_G2==6,0,
+ifelse(MATE_OCCP_NAME_G2==7,3,
+ifelse(MATE_OCCP_NAME_G2==8,0,
+ifelse(MATE_OCCP_NAME_G2==9,3,
+ifelse(MATE_OCCP_NAME_G2==10,1,
+ifelse(MATE_OCCP_NAME_G2==11,2,
+ifelse(MATE_OCCP_NAME_G2==12,9,
+ifelse(MATE_OCCP_NAME_G2==13,0,
+ifelse(MATE_OCCP_NAME_G2==14,2,
+ifelse(MATE_OCCP_NAME_G2==15,4,
+ifelse(MATE_OCCP_NAME_G2==16,2,
+ifelse(MATE_OCCP_NAME_G2==17,15,
+ifelse(MATE_OCCP_NAME_G2==18,0,0)))))))))))))))))))
+
+# 104: 가구 추정 소득 : ( 본인, 배우자 추정소득 합 )
+te$OTHR_INCM <-te %>% with(HSHD_INFR_INCM - (CUST_JOB_INCM + MATE_JOB_INCM))
+
+# 105: CUST_ACTL_INS_PREM : 가족 인원 수 중 보험가입 인원 수의 비중
+te$CUST_ACTL_INS_PREM <- te %>% with(CUST_FMLY_NUM/ACTL_FMLY_NUM)
+
+# 106: ONEDAY_PAY : 일시납일수도 있고
+te$ONEDAY_PAY <-te %>% with(ifelse(GDINS_MON_PREM == 0 & SVINS_MON_PREM == 0 & TOT_PREM != 0,1,0) )
+
+# 107: PREM_OVDU_AMT : 보험료 연체 금액
+te$PREM_OVDU_AMT <-te %>% with( PREM_OVDU_RATE/100 * TOT_PREM )
+
+# 108: MON_TLFE_AMT_PREM : 월단위 납부요금 / 월급
+te$MON_TLFE_AMT_PREM <- te %>% with((TEL_CUS_MDIF/((HSHD_INFR_INCM/12)+1)))
+
+##109: DIFF_OVDU_RATE : 보험료연체율과 최근1년보험료연체율 차이
+te$DIFF_OVDU_RATE <- te %>% with(PREM_OVDU_RATE - LT1Y_PEOD_RATE)
+
+##110: LT1Y_CTLT_CNT_per : 최근1년 실효해지건수 별 TARGET 비율
+# LT1Y_CTLT_CNT_per<- te %>% group_by(LT1Y_CTLT_CNT) %>% summarise(LT1Y_CTLT_CNT_per=mean(TARGET))
+te<-left_join(te,LT1Y_CTLT_CNT_per)
+
+# 111: AUTR_FAIL_MCNT_FREQ :자동이체 빈도 범주화
+te$AUTR_FAIL_MCNT_FREQ <- ifelse(te$AUTR_FAIL_MCNT == 0, 0,
+ifelse(te$AUTR_FAIL_MCNT %in% 1:20, 1,
+ifelse(te$AUTR_FAIL_MCNT %in% 21:40, 2,3)));
+# 112: PER_TOT_PREM : 기납입보험료 (개인/가구)
+te$PER_TOT_PREM <- te %>% with( TOT_PREM/FMLY_TOT_PREM)
+te$PER_TOT_PREM <- te %>% with(ifelse(is.na(PER_TOT_PREM),0,PER_TOT_PREM))
+
+# 113: PER_GDINS_PREM : 비연금저축상품월납입보험료 (개인/가구)
+te$PER_GDINS_PREM <- with(te, GDINS_MON_PREM/FMLY_GDINS_MNPREM)
+te$PER_GDINS_PREM <- te %>% with(ifelse(is.na(PER_GDINS_PREM),0,PER_GDINS_PREM))
+
+# 114: PER_GDINS_PREM_Y : 비연금저축상품월납입보험료 (개인/가구) 0.2이상이면 1
+te$PER_GDINS_PREM_Y<-te%>%with(ifelse(PER_GDINS_PREM>0.2,1,0))
+
+# 115 : PER_SVINS_PREM : 연금저축상품월납입보험료 (개인/가구)
+te$PER_SVINS_PREM <- with(te, SVINS_MON_PREM/FMLY_SVINS_MNPREM)
+te$PER_SVINS_PREM <- te %>% with(ifelse(is.na(PER_SVINS_PREM),0,PER_SVINS_PREM))
+
+# 116 : PER_SVINS_PREM_Y 연금저축상품월납입보험료 (개인/가구) 0.5이상이면 1
+te$PER_SVINS_PREM_Y <- te%>%with(ifelse(PER_GDINS_PREM>0.5,1,0))
+
+# 117: AVG_OCCR 신용대출, 카드개설, 신용카드 유지기간 평균
+te$AVG_OCCR <- te %>% with((CRDT_OCCR_MDIF + CRDT_CARD_CNT +SPTCT_OCCR_MDIF + CTCD_OCCR_MDIF)/4)
+
+
+
+# 118~123 : AGE관련 카이값 및 타겟비율 점수화
+# 118
+te$AGE_SCORE_CHI <- te %>% with(ifelse(AGE == "20" ,0.289,
+ifelse(AGE == "25",16.781,
+ifelse(AGE == "30",12.669,
+ifelse(AGE == "35",38.194,
+ifelse(AGE == "40",1.424,
+ifelse(AGE == "45",0.505,
+ifelse(AGE == "50",-2.136,
+ifelse(AGE == "55",-10.240,
+ifelse(AGE == "60",-27.206,
+ifelse(AGE == "65",-22.262,-0.091)))))))))))
+# 119
+te$AGE_SCORE_PROP <- te %>% with(ifelse(AGE == "20" ,0.05000000,
+ifelse(AGE == "25",0.06088142,
+ifelse(AGE == "30",0.05296128,
+ifelse(AGE == "35",0.05448638,
+ifelse(AGE == "40",0.04484366,
+ifelse(AGE == "45",0.04387991,
+ifelse(AGE == "50",0.04054359,
+ifelse(AGE == "55",0.03746492,
+ifelse(AGE == "60",0.03155604,
+ifelse(AGE == "65",0.02650670,0.03970223)))))))))))
+
+# 120
+te$AGE_G1_SCORE_CHI <- te %>% with(ifelse(AGE >= 20 & AGE <=35 ,1,
+ifelse(AGE >= 36 & AGE <=60 ,2,3)))
+te$AGE_G1_SCORE_CHI <- te %>% with(ifelse(AGE_G1_SCORE_CHI == 1 , 65.460,
+ifelse(AGE_G1_SCORE_CHI == 2, -9.436, -20.880)))
+
+# 121
+te$AGE_G1_SCORE_PROP <- te %>% with(ifelse(AGE >= 20 & AGE <=35 ,1,
+ifelse(AGE >= 36 & AGE <=60 ,2,3)))
+te$AGE_G1_SCORE_PROP <- te %>% with(ifelse(AGE_G1_SCORE_PROP == 1 ,0.05473823,
+ifelse(AGE_G1_SCORE_PROP == 2, 0.04051035, 0.02784048)))
+
+# 122
+te$AGE_G2_SCORE_CHI <- te %>% with(ifelse(AGE >= 20 & AGE <=25 ,1,
+ifelse(AGE >= 26 & AGE <=35 ,2,
+ifelse(AGE >= 36 & AGE <=60 ,3,4))))
+te$AGE_G2_SCORE_CHI <- te %>% with(ifelse(AGE_G2_SCORE_CHI == 1 , 16.472,
+ifelse(AGE_G2_SCORE_CHI == 2, 50.663,
+ifelse(AGE_G2_SCORE_CHI == 3, -9.436,-20.880))))
+
+# 123
+te$AGE_G2_SCORE_PROP <- te %>% with(ifelse(AGE >= 20 & AGE <=25 ,1,
+ifelse(AGE >= 26 & AGE <=35 ,2,
+ifelse(AGE >= 36 & AGE <=60 ,3,4))))
+te$AGE_G2_SCORE_PROP <- te %>% with(ifelse(AGE_G2_SCORE_PROP == 1 ,0.05981155,
+ifelse(AGE_G2_SCORE_PROP == 2, 0.05402119,
+ifelse(AGE_G2_SCORE_PROP == 3, 0.04051035,0.02784048))))
+
+# 124: 신용대출, 카드개설, 신용카드 유지기간 평균
+te$AVG_OCCR2 <- te %>% with((CRDT_OCCR_MDIF + SPTCT_OCCR_MDIF + CTCD_OCCR_MDIF)/3)
+
+# 125: 소득분위
+te$INCM_GRUP <- te %>% with(ifelse(HSHD_INFR_INCM<=(134*12),1,
+ifelse(HSHD_INFR_INCM<=(312*12),2,
+ifelse(HSHD_INFR_INCM<=(402*12),3,
+ifelse(HSHD_INFR_INCM<=(491*12),4,
+ifelse(HSHD_INFR_INCM<=(580*12),5,
+ifelse(HSHD_INFR_INCM<=(692*12),6,
+ifelse(HSHD_INFR_INCM<=(804*12),7,
+ifelse(HSHD_INFR_INCM<=(982*12),8,
+ifelse(HSHD_INFR_INCM<=(1295*12),9,10))))))))))
+
+# 126: 납부요금 미준수 여부
+te$MXOD_YN <- te %>% with(ifelse(LT1Y_MXOD_AMT > 0,1,0))
+te$MXOD_YN <- te$MXOD_YN + te$TLFE_UNPD_CNT
+
+# 127: 보험 최신성
+te$INS_REC <- te %>% with(ifelse(TOT_PREM <= 400,1,0))
+te$INS_REC <- as.factor(te$INS_REC)
+
+# 128 : PAYM_METD_NUM 납부방법
+te$PAYM_METD_NUM <- te %>% with(ifelse(PAYM_METD=="G",1,
+ifelse(PAYM_METD=="R",2,
+ifelse(PAYM_METD=="O",3,
+ifelse(PAYM_METD=="K",4,0)))))
+
+# 129~133(129~132을 반영한 것이 133, 5개 다 쓸껀지 133 하나만 쓸껀지)
+# 129 : BNK_CNT_SCORE : BNK건수별 연체비율 점수
+# cnt1 <- te %>% group_by(BNK_LNIF_CNT) %>% summarise(BNK_CNT_SCORE = mean(TARGET))
+te <- left_join(te, cnt1)
+
+# 130 : CPT_CNT_SCORE : CPT건수별 연체비율 점수
+# cnt <- te %>% group_by(CPT_LNIF_CNT) %>% summarise(CPT_CNT_SCORE = mean(TARGET))
+te <- left_join(te, cnt2)
+
+# 131 : SPART_CNT_SCORE :  SPART건수별 연체비율 점수
+# cnt <- te %>% group_by(SPART_LNIF_CNT) %>% summarise(SPART_CNT_SCORE= mean(TARGET))
+te <- left_join(te, cnt3)
+
+# 132 : ECT_CNT_SCORE : ECT건수별 연체비율 점수
+# cnt <- te %>% group_by(ECT_LNIF_CNT) %>% summarise(ECT_CNT_SCORE = mean(TARGET))
+te <- left_join(te, cnt4)
+
+# 133 : CNT_SCORE_AVG : 총 건수별 연체비율 합의 평균
+te$CNT_SCORE_AVG <- with(te,(BNK_CNT_SCORE+CPT_CNT_SCORE+SPART_CNT_SCORE+ECT_CNT_SCORE)/4)
+
+# 134~135 134을 Y의 비율로 점수화 한 것이 135
+# 134 : OVDU_CNT : 연체관련변수 Y/N변환한 값들의의 합
+temp <- te %>% select(CRLN_OVDU_RATE, CRLN_30OVDU_RATE, PREM_OVDU_RATE, LT1Y_PEOD_RATE, LT1Y_SLOD_RATE, CRMM_OVDU_AMT, LT1Y_MXOD_AMT, TARGET)
+temp$CRLN_OVDU_RATE2 <- ifelse(temp$CRLN_OVDU_RATE > 0,1,0)
+temp$CRLN_30OVDU_RATE2 <- ifelse(temp$CRLN_30OVDU_RATE > 0,1,0)
+temp$PREM_OVDU_RATE2 <- ifelse(temp$PREM_OVDU_RATE > 0,1,0)
+temp$LT1Y_PEOD_RATE2 <- ifelse(temp$LT1Y_PEOD_RATE > 0,1,0)
+temp$LT1Y_SLOD_RATE2 <- ifelse(temp$LT1Y_SLOD_RATE > 0,1,0)
+temp$CRMM_OVDU_AMT2 <- ifelse(temp$CRMM_OVDU_AMT > 0,1,0)
+temp$LT1Y_MXOD_AMT2 <- ifelse(temp$LT1Y_MXOD_AMT > 0,1,0)
+te$OVDU_CNT <- with(temp, CRLN_OVDU_RATE2+CRLN_30OVDU_RATE2+PREM_OVDU_RATE2+LT1Y_PEOD_RATE2+LT1Y_SLOD_RATE2+CRMM_OVDU_AMT2+LT1Y_MXOD_AMT2)
+rm(temp)
+
+# 135 : OVDU_CNT_SCORE
+# OVDU_CNT_te <- te %>% group_by(OVDU_CNT) %>% summarise(OVDU_CNT_SCORE=mean(TARGET))
+te <- left_join(te,OVDU_CNT_DF)
+
+# 136 : CRLN_OVDU_Y_PROP 한화생명신용대출 미상환금액 유무 TARGET 비율
+te$CRLN_OVDU_Y_PROP <- te %>% with(ifelse(TOT_CRLN_AMT - TOT_REPY_AMT > 0, 1, 0))
+te$CRLN_OVDU_Y_PROP <- te %>% with(ifelse(CRLN_OVDU_Y_PROP == 1, 0.05565749, 0.04237929))
+
+# 137 : LT1Y_MXOD_Y_PROP 최근 1년 납부요금 연체 유무 TARGET 비율
+te$LT1Y_MXOD_Y_PROP <- te %>% with(ifelse(LT1Y_MXOD_AMT > 0, 1, 0))
+te$LT1Y_MXOD_Y_PROP <- te %>% with(ifelse(LT1Y_MXOD_Y_PROP == 1, 0.15496521, 0.02416622))
+
+# 138 : SKT 멤버수
+te$TEL_MBSP_GRAD_NUM<-  te %>% with(ifelse(TEL_MBSP_GRAD=="E",4,
+ifelse(te$TEL_MBSP_GRAD=="R",3,
+ifelse(te$TEL_MBSP_GRAD=="W",2,
+ifelse(te$TEL_MBSP_GRAD=="Q",1,0)))))
+sum(is.na(te))
+```
+
+# 5. log변수 생성
+```{r}
+te[,colnames(te %>% keep(is.character))]<-
+lapply(te[,colnames(te %>% keep(is.character))],as.factor)
+
+log_te <- te %>% keep(is.numeric)
+
+log_te$ARPU <- log_te$ARPU+0.0001
+log_te$CHG_CRDT_GRAD <- log_te$CHG_CRDT_GRAD+4
+log_te$CPT_ECT_M_SPART_CNT <- log_te$CPT_ECT_M_SPART_CNT+2
+log_te$OCCP_NAME_G2 <- log_te$OCCP_NAME_G2+11
+log_te$MATE_OCCP_NAME_G2 <- log_te$MATE_OCCP_NAME_G2+48
+log_te$OTHR_INCM <- log_te$OTHR_INCM+900
+log_te$DIFF_OVDU_RATE <- log_te$DIFF_OVDU_RATE+94
+log_te$AGE_SCORE_CHI <- log_te$AGE_SCORE_CHI+27.22
+log_te$AGE_G1_SCORE_CHI <- log_te$AGE_G1_SCORE_CHI+19.982
+log_te$AGE_G2_SCORE_CHI <- log_te$AGE_G2_SCORE_CHI+20.779
+
+log_te <- log(log_te[,1:ncol(log_te)]+1)
+
+sum(is.na(log_te))
+
+log_te <- log_te %>% select(-CUST_ID)
+sum(is.na(log_te))
+
+log_name <- names(log_te)
+log_name <- paste0(log_name,"_LOG")
+names(log_te) <- log_name
+
+te <- bind_cols(te,log_te)
+```
+
+
+# 6. 스케일링
+```{r}
+df$TARGET <- as.factor(df$TARGET)
+df$CUST_ID <- as.factor(df$CUST_ID)
+num <- df %>% keep(is.numeric)
+fac <- df %>% keep(is.factor)
+num <- as.data.frame(apply(num, 2, scale))
+
+df <- bind_cols(fac,num)
+df <- df %>% select(2:ncol(df),1)
+
+
+te$TARGET <- as.factor(te$TARGET)
+te$CUST_ID <- as.factor(te$CUST_ID)
+num <- te %>% keep(is.numeric)
+fac <- te %>% keep(is.factor)
+num <- as.data.frame(apply(num, 2, scale))
+
+
+te <- bind_cols(fac,num)
+te <- te %>% select(2:ncol(te),1)
+
+```

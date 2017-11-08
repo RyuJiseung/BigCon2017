@@ -1,0 +1,61 @@
+
+# 7. H2O 클러스터
+```{r}
+h2o.init(nthreads = -1, max_mem_size = '8G')
+df$TARGET<-as.factor(df$TARGET)
+te$TARGET<-c(rep(c(0,1),nrow(te)/2),1)
+train_Hex<-as.h2o(df)
+test_Hex<-as.h2o(te)
+```
+
+# XGBOOST
+# 8. 변수선택 - X : 112개 선택, Y : 1개
+```{r}
+temp <- c("OVDU_CNT","OVDU_CNT_SCORE","SPART_LNIF_CNT_PREM","ECT_TOT_CNT_PREM","BNK_CNT_SCORE","CPT_CNT_SCORE","SPART_CNT_SCORE","ECT_CNT_SCORE","SPART_ECP_CPT_CNT","ECT_TOT_AMT_PREM","AVG_OCCR","OCCP_NAME_G","CUST_JOB_INCM","HSHD_INFR_INCM","ACTL_FMLY_NUM","LAST_CHLD_AGE","MATE_OCCP_NAME_G","MATE_JOB_INCM","JOB_RATE","JOB_RATE2","OCCP_NAME_G2","OTHR_INCM","CUST_ACTL_INS_PREM","INCM_GRUP","DIFF_OVDU_RATE","PER_GDINS_PREM","AUTR_FAIL_MCNT_FREQ","AGE","SEX","AGE_SCORE_CHI","AGE_SCORE_PROP","TEL_MBSP_GRAD","MOBL_FATY_PRC","TEL_CNTT_QTR","NUM_DAY_SUSP","PAYM_METD","LINE_STUS","PAYM_METD_NUM","LT1Y_MXOD_Y_PROP","SPART_LNIF_CNT","TOT_LNIF_CNT","CPT_TOT_CNT_PREM","CNT_SCORE_AVG","TOT_LNIF_AMT","CPT_LNIF_AMT_PREM","CRDT_OCCR_MDIF","SPTCT_OCCR_MDIF","CRDT_CARD_CNT","CTCD_OCCR_MDIF","LT1Y_PEOD_RATE","AUTR_FAIL_MCNT","FMLY_PLPY_CNT","ARPU","CRMM_OVDU_AMT","MOBL_PRIN","MXOD_YN")
+
+temp2 <- c("BNK_LNIF_CNT","CPT_LNIF_CNT","ECT_LNIF_CNT","TOT_MTIF_AMT","CPT_LNIF_CNT_PREM","ECT_LNIF_CNT_PREM","TOT_CLIF_AMT","BNK_LNIF_AMT","CPT_LNIF_AMT","BNK_GUIF_AMT","BNK_LNIF_AMT_AVG","CPT_LNIF_AMT_AVG","INCM_LNIF_RATE_IND","INCM_LNIF_RATE_COU","INCM_LNIF_RATE_FAM","TOT_CLIF_AMT_PREM","TOT_MTIF_AMT_PREM","BNK_LNIF_AMT_PREM","ECT_LNIF_AMT","CB_GUIF_AMT","PREM_OVDU_RATE","GDINS_MON_PREM","SVINS_MON_PREM","FMLY_GDINS_MNPREM","FMLY_SVINS_MNPREM","MAX_MON_PREM","TOT_PREM","FMLY_TOT_PREM","PREM_OVDU_AMT","PER_TOT_PREM","PREM_OVDU_AMT","PER_TOT_PREM","FYCM_PAID_AMT","FMLY_CLAM_CNT","AVG_CALL_TIME","AVG_CALL_FREQ","MON_TLFE_AMT","LT1Y_MXOD_AMT","TEL_CUS_MDIF","SPART_LNIF_CNT","TOT_LNIF_CNT","CPT_TOT_CNT_PREM","CNT_SCORE_AVG","TOT_LNIF_AMT","CPT_LNIF_AMT_PREM","CRDT_OCCR_MDIF","SPTCT_OCCR_MDIF","CRDT_CARD_CNT","CTCD_OCCR_MDIF","LT1Y_PEOD_RATE","AUTR_FAIL_MCNT","FMLY_PLPY_CNT","ARPU","CRMM_OVDU_AMT","MOBL_PRIN","MXOD_YN")
+
+temp2 <- paste0(temp2,"_LOG")
+temp <- c(temp, temp2)
+
+predictors <- temp
+response <- "TARGET"
+rm(temp,temp2)
+```
+
+```{r}
+xgboost <- h2o.xgboost(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      ntree=50,
+                      # nfolds=10,
+                      seed = 2017)
+
+pred_xgboost <- h2o.predict(xgboost,test_Hex)
+
+gbm <- h2o.gbm(x = predictors,
+                      y = response,
+                      training_frame = train_Hex,
+                      ntree=200,
+                      # nfolds=10,
+                      seed = 2017)
+
+pred_gbm <- h2o.predict(gbm,test_Hex)
+
+pred_test <- as.vector((pred_xgboost$C3 + pred_gbm$p1)/2)
+
+```
+
+
+
+```{r}
+library(e1071)
+te$TARGET<-ifelse(pred_test>0.225,1,0)
+te1 <- te %>% select(c("CUST_ID","TARGET"))
+te_age_star1 <- te_age_star %>% select(c("CUST_ID","TARGET"))
+te_age_star1$CUST_ID<-as.factor(te_age_star1$CUST_ID)
+te_age_star1$TARGET<-as.numeric(te_age_star1$TARGET)
+final<-rbind(te1,te_age_star1)
+final <- final[order(final$CUST_ID),]
+write.csv(final,"Answer_sheet.csv",row.names = F)
+```
