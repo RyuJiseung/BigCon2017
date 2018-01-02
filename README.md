@@ -13,5 +13,7 @@
 #### EDA
 
 [EDA](EDA/EDA.html)
+
 [EDA & MODELING](EDA/EDA%20%26%20MODELING.html)
+
 [h2o MODELING](EDA/h2o_MODELING.html)
