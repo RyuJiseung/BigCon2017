@@ -9,3 +9,13 @@
 [데이터] 개인정보 비식별화 한 SK텔레콤 데이터, 개인정보 비식별화 한 SCI평가정보 및 한화생명 데이터
 
 ### 최종 결과 : F-score는 0.43182 / F-score 기준 약 20위권 정도 (약 105팀 참가기준)
+
+#### EDA
+
+
+EDA.html
+
+EDA%20%26%20MODELING.html
+
+h2o_MODELING.html
+
